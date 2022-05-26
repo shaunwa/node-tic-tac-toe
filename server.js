@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
+import { v4 as uuid } from 'uuid';
 
 let app = express();
 let server = http.createServer(app);
@@ -16,8 +17,9 @@ const CATS_GAME = 'CATS_GAME';
 
 let games = [];
 
-function createNewGame() {
+function createNewGame(id) {
     return {
+        id,
         currentPlayer: null,
         gameIsOver: false,
         currentGameState: WAITING,
@@ -42,26 +44,49 @@ io.on('connection', socket => {
     let socketId = nextSocketId;
     nextSocketId += 1;
 
-    let waitingGame = games.find(game => game.currentGameState === WAITING);
     let game;
+    let { gameId, createNew } = socket.handshake.query;
 
-    if (waitingGame) {
-        game = waitingGame;
-        console.log('A second player has joined! Starting game...');
-        game.playerOSocket = socket;
-        game.playerXSocket.emit('info', `A second player has joined! You\'re playing against ${socketId}. Time to start the game!`);
-        game.playerOSocket.emit('info', `You are the second player, your id is ${socketId}, and you are playing against ${game.playerXId}. The game will now start!`);
-        game.playerOId = socketId;
-
-        startGame(waitingGame);
-    } else {
-        let newGame = createNewGame();
+    if (gameId) {
+        let existingGame = games.find(game => game.id === gameId);
+        if (existingGame) {
+            existingGame.playerOSocket = socket;
+            existingGame.playerXSocket.emit('info', `The other player has joined! Time to start the game!`);
+            existingGame.playerOSocket.emit('info', `Game found! The game will now start!`);
+            game = existingGame;
+            startGame(game);
+        } else {
+            socket.emit('id not found');
+        }
+    } else if (createNew) {
+        let newGameId = uuid();
+        let newGame = createNewGame(newGameId);
+        newGame.playerXSocket = socket;
+        newGame.playerXSocket.emit('info', `New game created! The game ID is ${newGameId} (share this ID with another player). We are waiting for a second player to join...`);
+        games.push(newGame);
         game = newGame;
-        console.log('The first player has joined, waiting for second player...');
-        game.playerXSocket = socket;
-        game.playerXSocket.emit('info', `You are the first player,and your id is ${socketId}. We are waiting for a second player to join...`);
-        game.playerXId = socketId;
-        games.push(game);
+    } else {
+        let waitingGame = games.find(game =>
+            game.currentGameState === WAITING && !game.id);
+
+        if (waitingGame) {
+            game = waitingGame;
+            console.log('A second player has joined! Starting game...');
+            game.playerOSocket = socket;
+            game.playerXSocket.emit('info', `A second player has joined! You\'re playing against ${socketId}. Time to start the game!`);
+            game.playerOSocket.emit('info', `You are the second player, your id is ${socketId}, and you are playing against ${game.playerXId}. The game will now start!`);
+            game.playerOId = socketId;
+
+            startGame(waitingGame);
+        } else {
+            let newGame = createNewGame();
+            game = newGame;
+            console.log('The first player has joined, waiting for second player...');
+            game.playerXSocket = socket;
+            game.playerXSocket.emit('info', `You are the first player,and your id is ${socketId}. We are waiting for a second player to join...`);
+            game.playerXId = socketId;
+            games.push(game);
+        }
     }
 
     socket.on('new move', input => {
@@ -73,6 +98,14 @@ io.on('connection', socket => {
         } = game;
 
         let [yMove, xMove] = parseInput(input);
+
+        if (!positionIsOpen(yMove, xMove, playerXMoves, playerOMoves)) {
+            let currentPlayerSocket = game.currentPlayer === 'Player X'
+                ? playerXSocket
+                : playerOSocket;
+
+            return currentPlayerSocket.emit('position taken');
+        }
 
         let currentPlayerMoves = game.currentPlayer === 'Player X'
             ? playerXMoves
@@ -143,6 +176,10 @@ function parseInput(input) {
         ['A', 'B', 'C'].indexOf(letter),
         ['1', '2', '3'].indexOf(number),
     ]
+}
+
+function positionIsOpen(row, column, playerXMoves, playerOMoves) {
+    return !playerXMoves[row][column] && !playerOMoves[row][column];
 }
 
 function getNextGameState(xMoves, oMoves) {
