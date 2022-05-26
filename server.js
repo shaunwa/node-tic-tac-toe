@@ -8,94 +8,132 @@ let io = new Server(server);
 
 let PORT = process.env.PORT || 8080;
 
+const WAITING = 'WAITING';
 const RUNNING = 'RUNNING';
 const PLAYER_X_WINS = 'PLAYER_X_WINS';
 const PLAYER_0_WINS = 'PLAYER_O_WINS';
 const CATS_GAME = 'CATS_GAME';
 
-let currentPlayer;
-let gameIsOver = false;
-let currentGameState = RUNNING;
-let playerXMoves = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-];
-let playerOMoves = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-];
+let games = [];
 
-let playerX;
-let playerO;
+function createNewGame() {
+    return {
+        currentPlayer: null,
+        gameIsOver: false,
+        currentGameState: WAITING,
+        playerXMoves: [
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+        ],
+        playerOMoves: [
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+        ],
+        playerXSocket: null,
+        playerOSocket: null,
+    }
+}
+
+let nextSocketId = 0;
 
 io.on('connection', socket => {
-    if (playerX) {
-        console.log('A second player has joined! Starting game...');
-        playerO = socket;
-        playerX.emit('info', 'A second player has joined! Time to start the game!');
-        playerO.emit('info', 'You are the second player, the game will now start!');
+    let socketId = nextSocketId;
+    nextSocketId += 1;
 
-        startGame();
+    let waitingGame = games.find(game => game.currentGameState === WAITING);
+    let game;
+
+    if (waitingGame) {
+        game = waitingGame;
+        console.log('A second player has joined! Starting game...');
+        game.playerOSocket = socket;
+        game.playerXSocket.emit('info', `A second player has joined! You\'re playing against ${socketId}. Time to start the game!`);
+        game.playerOSocket.emit('info', `You are the second player, your id is ${socketId}, and you are playing against ${game.playerXId}. The game will now start!`);
+        game.playerOId = socketId;
+
+        startGame(waitingGame);
     } else {
+        let newGame = createNewGame();
+        game = newGame;
         console.log('The first player has joined, waiting for second player...');
-        playerX = socket;
-        playerX.emit('info', 'You are the first player, we are waiting for a second player to join...');
+        game.playerXSocket = socket;
+        game.playerXSocket.emit('info', `You are the first player,and your id is ${socketId}. We are waiting for a second player to join...`);
+        game.playerXId = socketId;
+        games.push(game);
     }
 
     socket.on('new move', input => {
+        let {
+            playerXMoves,
+            playerOMoves,
+            playerXSocket,
+            playerOSocket,
+        } = game;
+
         let [yMove, xMove] = parseInput(input);
 
-        let currentPlayerMoves = currentPlayer === 'Player X'
+        let currentPlayerMoves = game.currentPlayer === 'Player X'
             ? playerXMoves
             : playerOMoves;
 
         currentPlayerMoves[yMove][xMove] = 1;
 
-        currentGameState = getNextGameState(playerXMoves, playerOMoves);
-        gameIsOver = [PLAYER_X_WINS, PLAYER_0_WINS, CATS_GAME].includes(currentGameState);
+        game.currentGameState = getNextGameState(playerXMoves, playerOMoves);
+        game.gameIsOver = [PLAYER_X_WINS, PLAYER_0_WINS, CATS_GAME].includes(game.currentGameState);
 
-        playerX.emit('player moves', { playerXMoves, playerOMoves });
-        playerO.emit('player moves', { playerXMoves, playerOMoves });
+        playerXSocket.emit('player moves', { playerXMoves, playerOMoves });
+        playerOSocket.emit('player moves', { playerXMoves, playerOMoves });
 
-        currentPlayer = currentPlayer === 'Player X' ? 'Player O' : 'Player X';
+        game.currentPlayer = game.currentPlayer === 'Player X' ? 'Player O' : 'Player X';
 
-        if (!gameIsOver) {
-            if (currentPlayer === 'Player X') {
-                playerX.emit('your turn');
-                playerO.emit('other player turn');
+        if (!game.gameIsOver) {
+            if (game.currentPlayer === 'Player X') {
+                playerXSocket.emit('your turn');
+                playerOSocket.emit('other player turn');
             } else {
-                playerO.emit('your turn');
-                playerX.emit('other player turn');
+                playerOSocket.emit('your turn');
+                playerXSocket.emit('other player turn');
             }
         } else {
-            if (currentGameState === PLAYER_X_WINS) {
-                playerX.emit('win');
-                playerO.emit('lose');
-            } else if (currentGameState === PLAYER_0_WINS) {
-                playerO.emit('win');
-                playerX.emit('lose');
-            } else {
-                playerO.emit('tie');
-                playerX.emit('tie');
+            if (game.currentGameState === PLAYER_X_WINS) {
+                playerXSocket.emit('win');
+                playerOSocket.emit('lose');
+            } else if (game.currentGameState === PLAYER_0_WINS) {
+                playerOSocket.emit('win');
+                playerXSocket.emit('lose');
+            } else if (game.currentGameState === CATS_GAME) {
+                playerOSocket.emit('tie');
+                playerXSocket.emit('tie');
             }
+
+            games = games.filter(g => g !== game);
         }
     })
 });
 
-function startGame() {
-    console.log('The game has started!');
-    playerX.emit('player moves', { playerXMoves, playerOMoves });
-    playerO.emit('player moves', { playerXMoves, playerOMoves });
-    currentPlayer = Math.random() > 0.5 ? 'Player X' : 'Player O';
+function startGame(game) {
+    let {
+        playerXSocket,
+        playerOSocket,
+        playerXMoves,
+        playerOMoves,
+    } = game;
 
-    if (currentPlayer === 'Player X') {
-        playerX.emit('your turn');
-        playerO.emit('other player turn');
+    game.currentGameState = RUNNING;
+
+    console.log('The game has started!');
+    playerXSocket.emit('player moves', { playerXMoves, playerOMoves });
+    playerOSocket.emit('player moves', { playerXMoves, playerOMoves });
+    game.currentPlayer = Math.random() > 0.5 ? 'Player X' : 'Player O';
+
+    if (game.currentPlayer === 'Player X') {
+        playerXSocket.emit('your turn');
+        playerOSocket.emit('other player turn');
     } else {
-        playerO.emit('your turn');
-        playerX.emit('other player turn');
+        playerOSocket.emit('your turn');
+        playerXSocket.emit('other player turn');
     }
 }
 
@@ -113,17 +151,23 @@ function getNextGameState(xMoves, oMoves) {
         || isDiagonalWin(xMoves)
         || isCornersWin(xMoves);
 
+    if (playerXWins) {
+        return PLAYER_X_WINS;
+    }
+
     let player0Wins = isHorizontalWin(oMoves)
         || isVerticalWin(oMoves)
         || isDiagonalWin(oMoves)
         || isCornersWin(oMoves);
 
-    if (playerXWins) {
-        return PLAYER_X_WINS;
-    }
-
     if (player0Wins) {
         return PLAYER_0_WINS;
+    }
+
+    let catsGame = isCatsGame(xMoves, oMoves);
+
+    if (catsGame) {
+        return CATS_GAME;
     }
 
     return RUNNING;
@@ -149,5 +193,11 @@ function isCornersWin(moves) {
         && moves[2][0] && moves[2][2];
 }
 
+function isCatsGame(xMoves, oMoves) {
+    return xMoves.every((row, rowNumber) =>
+        row.every((_, columnNumber) =>
+            xMoves[rowNumber][columnNumber]
+                || oMoves[rowNumber][columnNumber]))
+}
 
 server.listen(PORT, () => console.log('Server is listening on port ' + PORT));
